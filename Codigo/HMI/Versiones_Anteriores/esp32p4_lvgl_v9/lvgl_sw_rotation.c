@@ -1,0 +1,334 @@
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "driver/i2c_master.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_ldo_regulator.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_mipi_dsi.h"
+#include "src/lcd/esp_lcd_jd9365.h"
+#include "lvgl_port_v9.h"
+
+#define TAG                         "main"
+
+#define BSP_MIPI_DSI_PHY_PWR_LDO_CHAN       (3)  
+#define BSP_MIPI_DSI_PHY_PWR_LDO_VOLTAGE_MV (2500)
+
+#define BSP_LCD_H_RES                       (1280)
+#define BSP_LCD_V_RES                       (800)
+
+#define BSP_I2C_NUM                         (I2C_NUM_1)
+#define BSP_I2C_SDA                         (GPIO_NUM_7)
+#define BSP_I2C_SCL                         (GPIO_NUM_8)
+
+#define BSP_LCD_RST                         (GPIO_NUM_27)
+#define BSP_LCD_BACKLIGHT                   (GPIO_NUM_23)
+
+i2c_master_bus_handle_t i2c_handle = NULL; 
+
+static const jd9365_lcd_init_cmd_t lcd_cmd[] = {
+    {0xE0, (uint8_t[]){0x00}, 1, 0},
+    {0xE1, (uint8_t[]){0x93}, 1, 0},
+    {0xE2, (uint8_t[]){0x65}, 1, 0},
+    {0xE3, (uint8_t[]){0xF8}, 1, 0},
+    {0x80, (uint8_t[]){0x01}, 1, 0},
+    {0xE0, (uint8_t[]){0x01}, 1, 0},
+    {0x00, (uint8_t[]){0x00}, 1, 0},
+    {0x01, (uint8_t[]){0x39}, 1, 0},
+    {0x03, (uint8_t[]){0x10}, 1, 0},
+    {0x04, (uint8_t[]){0x41}, 1, 0},
+    {0x0C, (uint8_t[]){0x74}, 1, 0},
+    {0x17, (uint8_t[]){0x00}, 1, 0},
+    {0x18, (uint8_t[]){0xD7}, 1, 0},
+    {0x19, (uint8_t[]){0x00}, 1, 0},
+    {0x1A, (uint8_t[]){0x00}, 1, 0},
+    {0x1B, (uint8_t[]){0xD7}, 1, 0},
+    {0x1C, (uint8_t[]){0x00}, 1, 0},
+    {0x24, (uint8_t[]){0xFE}, 1, 0},
+    {0x35, (uint8_t[]){0x26}, 1, 0},
+    {0x37, (uint8_t[]){0x69}, 1, 0},
+    {0x38, (uint8_t[]){0x05}, 1, 0},
+    {0x39, (uint8_t[]){0x06}, 1, 0},
+    {0x3A, (uint8_t[]){0x08}, 1, 0},
+    {0x3C, (uint8_t[]){0x78}, 1, 0},
+    {0x3D, (uint8_t[]){0xFF}, 1, 0},
+    {0x3E, (uint8_t[]){0xFF}, 1, 0},
+    {0x3F, (uint8_t[]){0xFF}, 1, 0},
+    {0x40, (uint8_t[]){0x06}, 1, 0},
+    {0x41, (uint8_t[]){0xA0}, 1, 0},
+    {0x43, (uint8_t[]){0x14}, 1, 0},
+    {0x44, (uint8_t[]){0x0B}, 1, 0},
+    {0x45, (uint8_t[]){0x30}, 1, 0},
+    {0x4B, (uint8_t[]){0x04}, 1, 0},
+    {0x55, (uint8_t[]){0x02}, 1, 0},
+    {0x57, (uint8_t[]){0x89}, 1, 0},
+    {0x59, (uint8_t[]){0x0A}, 1, 0},
+    {0x5A, (uint8_t[]){0x28}, 1, 0},
+    {0x5B, (uint8_t[]){0x15}, 1, 0},
+    {0x5D, (uint8_t[]){0x50}, 1, 0},
+    {0x5E, (uint8_t[]){0x37}, 1, 0},
+    {0x5F, (uint8_t[]){0x29}, 1, 0},
+    {0x60, (uint8_t[]){0x1E}, 1, 0},
+    {0x61, (uint8_t[]){0x1D}, 1, 0},
+    {0x62, (uint8_t[]){0x12}, 1, 0},
+    {0x63, (uint8_t[]){0x1A}, 1, 0},
+    {0x64, (uint8_t[]){0x08}, 1, 0},
+    {0x65, (uint8_t[]){0x25}, 1, 0},
+    {0x66, (uint8_t[]){0x26}, 1, 0},
+    {0x67, (uint8_t[]){0x28}, 1, 0},
+    {0x68, (uint8_t[]){0x49}, 1, 0},
+    {0x69, (uint8_t[]){0x3A}, 1, 0},
+    {0x6A, (uint8_t[]){0x43}, 1, 0},
+    {0x6B, (uint8_t[]){0x3A}, 1, 0},
+    {0x6C, (uint8_t[]){0x3B}, 1, 0},
+    {0x6D, (uint8_t[]){0x32}, 1, 0},
+    {0x6E, (uint8_t[]){0x1F}, 1, 0},
+    {0x6F, (uint8_t[]){0x0E}, 1, 0},
+    {0x70, (uint8_t[]){0x50}, 1, 0},
+    {0x71, (uint8_t[]){0x37}, 1, 0},
+    {0x72, (uint8_t[]){0x29}, 1, 0},
+    {0x73, (uint8_t[]){0x1E}, 1, 0},
+    {0x74, (uint8_t[]){0x1D}, 1, 0},
+    {0x75, (uint8_t[]){0x12}, 1, 0},
+    {0x76, (uint8_t[]){0x1A}, 1, 0},
+    {0x77, (uint8_t[]){0x08}, 1, 0},
+    {0x78, (uint8_t[]){0x25}, 1, 0},
+    {0x79, (uint8_t[]){0x26}, 1, 0},
+    {0x7A, (uint8_t[]){0x28}, 1, 0},
+    {0x7B, (uint8_t[]){0x49}, 1, 0},
+    {0x7C, (uint8_t[]){0x3A}, 1, 0},
+    {0x7D, (uint8_t[]){0x43}, 1, 0},
+    {0x7E, (uint8_t[]){0x3A}, 1, 0},
+    {0x7F, (uint8_t[]){0x3B}, 1, 0},
+    {0x80, (uint8_t[]){0x32}, 1, 0},
+    {0x81, (uint8_t[]){0x1F}, 1, 0},
+    {0x82, (uint8_t[]){0x0E}, 1, 0},
+    {0xE0, (uint8_t[]){0x02}, 1, 0},
+    {0x00, (uint8_t[]){0x1F}, 1, 0},
+    {0x01, (uint8_t[]){0x1F}, 1, 0},
+    {0x02, (uint8_t[]){0x52}, 1, 0},
+    {0x03, (uint8_t[]){0x51}, 1, 0},
+    {0x04, (uint8_t[]){0x50}, 1, 0},
+    {0x05, (uint8_t[]){0x4B}, 1, 0},
+    {0x06, (uint8_t[]){0x4A}, 1, 0},
+    {0x07, (uint8_t[]){0x49}, 1, 0},
+    {0x08, (uint8_t[]){0x48}, 1, 0},
+    {0x09, (uint8_t[]){0x47}, 1, 0},
+    {0x0A, (uint8_t[]){0x46}, 1, 0},
+    {0x0B, (uint8_t[]){0x45}, 1, 0},
+    {0x0C, (uint8_t[]){0x44}, 1, 0},
+    {0x0D, (uint8_t[]){0x40}, 1, 0},
+    {0x0E, (uint8_t[]){0x41}, 1, 0},
+    {0x0F, (uint8_t[]){0x1F}, 1, 0},
+    {0x10, (uint8_t[]){0x1F}, 1, 0},
+    {0x11, (uint8_t[]){0x1F}, 1, 0},
+    {0x12, (uint8_t[]){0x1F}, 1, 0},
+    {0x13, (uint8_t[]){0x1F}, 1, 0},
+    {0x14, (uint8_t[]){0x1F}, 1, 0},
+    {0x15, (uint8_t[]){0x1F}, 1, 0},
+    {0x16, (uint8_t[]){0x1F}, 1, 0},
+    {0x17, (uint8_t[]){0x1F}, 1, 0},
+    {0x18, (uint8_t[]){0x52}, 1, 0},
+    {0x19, (uint8_t[]){0x51}, 1, 0},
+    {0x1A, (uint8_t[]){0x50}, 1, 0},
+    {0x1B, (uint8_t[]){0x4B}, 1, 0},
+    {0x1C, (uint8_t[]){0x4A}, 1, 0},
+    {0x1D, (uint8_t[]){0x49}, 1, 0},
+    {0x1E, (uint8_t[]){0x48}, 1, 0},
+    {0x1F, (uint8_t[]){0x47}, 1, 0},
+    {0x20, (uint8_t[]){0x46}, 1, 0},
+    {0x21, (uint8_t[]){0x45}, 1, 0},
+    {0x22, (uint8_t[]){0x44}, 1, 0},
+    {0x23, (uint8_t[]){0x40}, 1, 0},
+    {0x24, (uint8_t[]){0x41}, 1, 0},
+    {0x25, (uint8_t[]){0x1F}, 1, 0},
+    {0x26, (uint8_t[]){0x1F}, 1, 0},
+    {0x27, (uint8_t[]){0x1F}, 1, 0},
+    {0x28, (uint8_t[]){0x1F}, 1, 0},
+    {0x29, (uint8_t[]){0x1F}, 1, 0},
+    {0x2A, (uint8_t[]){0x1F}, 1, 0},
+    {0x2B, (uint8_t[]){0x1F}, 1, 0},
+    {0x2C, (uint8_t[]){0x1F}, 1, 0},
+    {0x2D, (uint8_t[]){0x1F}, 1, 0},
+    {0x2E, (uint8_t[]){0x52}, 1, 0},
+    {0x2F, (uint8_t[]){0x40}, 1, 0},
+    {0x30, (uint8_t[]){0x41}, 1, 0},
+    {0x31, (uint8_t[]){0x48}, 1, 0},
+    {0x32, (uint8_t[]){0x49}, 1, 0},
+    {0x33, (uint8_t[]){0x4A}, 1, 0},
+    {0x34, (uint8_t[]){0x4B}, 1, 0},
+    {0x35, (uint8_t[]){0x44}, 1, 0},
+    {0x36, (uint8_t[]){0x45}, 1, 0},
+    {0x37, (uint8_t[]){0x46}, 1, 0},
+    {0x38, (uint8_t[]){0x47}, 1, 0},
+    {0x39, (uint8_t[]){0x51}, 1, 0},
+    {0x3A, (uint8_t[]){0x50}, 1, 0},
+    {0x3B, (uint8_t[]){0x1F}, 1, 0},
+    {0x3C, (uint8_t[]){0x1F}, 1, 0},
+    {0x3D, (uint8_t[]){0x1F}, 1, 0},
+    {0x3E, (uint8_t[]){0x1F}, 1, 0},
+    {0x3F, (uint8_t[]){0x1F}, 1, 0},
+    {0x40, (uint8_t[]){0x1F}, 1, 0},
+    {0x41, (uint8_t[]){0x1F}, 1, 0},
+    {0x42, (uint8_t[]){0x1F}, 1, 0},
+    {0x43, (uint8_t[]){0x1F}, 1, 0},
+    {0x44, (uint8_t[]){0x52}, 1, 0},
+    {0x45, (uint8_t[]){0x40}, 1, 0},
+    {0x46, (uint8_t[]){0x41}, 1, 0},
+    {0x47, (uint8_t[]){0x48}, 1, 0},
+    {0x48, (uint8_t[]){0x49}, 1, 0},
+    {0x49, (uint8_t[]){0x4A}, 1, 0},
+    {0x4A, (uint8_t[]){0x4B}, 1, 0},
+    {0x4B, (uint8_t[]){0x44}, 1, 0},
+    {0x4C, (uint8_t[]){0x45}, 1, 0},
+    {0x4D, (uint8_t[]){0x46}, 1, 0},
+    {0x4E, (uint8_t[]){0x47}, 1, 0},
+    {0x4F, (uint8_t[]){0x51}, 1, 0},
+    {0x50, (uint8_t[]){0x50}, 1, 0},
+    {0x51, (uint8_t[]){0x1F}, 1, 0},
+    {0x52, (uint8_t[]){0x1F}, 1, 0},
+    {0x53, (uint8_t[]){0x1F}, 1, 0},
+    {0x54, (uint8_t[]){0x1F}, 1, 0},
+    {0x55, (uint8_t[]){0x1F}, 1, 0},
+    {0x56, (uint8_t[]){0x1F}, 1, 0},
+    {0x57, (uint8_t[]){0x1F}, 1, 0},
+    {0x58, (uint8_t[]){0x40}, 1, 0},
+    {0x59, (uint8_t[]){0x00}, 1, 0},
+    {0x5A, (uint8_t[]){0x00}, 1, 0},
+    {0x5B, (uint8_t[]){0x10}, 1, 0},
+    {0x5C, (uint8_t[]){0x05}, 1, 0},
+    {0x5D, (uint8_t[]){0x50}, 1, 0},
+    {0x5E, (uint8_t[]){0x01}, 1, 0},
+    {0x5F, (uint8_t[]){0x02}, 1, 0},
+    {0x60, (uint8_t[]){0x50}, 1, 0},
+    {0x61, (uint8_t[]){0x06}, 1, 0},
+    {0x62, (uint8_t[]){0x04}, 1, 0},
+    {0x63, (uint8_t[]){0x03}, 1, 0},
+    {0x64, (uint8_t[]){0x64}, 1, 0},
+    {0x65, (uint8_t[]){0x65}, 1, 0},
+    {0x66, (uint8_t[]){0x0B}, 1, 0},
+    {0x67, (uint8_t[]){0x73}, 1, 0},
+    {0x68, (uint8_t[]){0x07}, 1, 0},
+    {0x69, (uint8_t[]){0x06}, 1, 0},
+    {0x6A, (uint8_t[]){0x64}, 1, 0},
+    {0x6B, (uint8_t[]){0x08}, 1, 0},
+    {0x6C, (uint8_t[]){0x00}, 1, 0},
+    {0x6D, (uint8_t[]){0x32}, 1, 0},
+    {0x6E, (uint8_t[]){0x08}, 1, 0},
+    {0xE0, (uint8_t[]){0x04}, 1, 0},
+    {0x2C, (uint8_t[]){0x6B}, 1, 0},
+    {0x35, (uint8_t[]){0x08}, 1, 0},
+    {0x37, (uint8_t[]){0x00}, 1, 0},
+    {0xE0, (uint8_t[]){0x00}, 1, 0},
+    {0x11, (uint8_t[]){0x00}, 1, 0},
+    {0x29, (uint8_t[]){0x00}, 1, 5},
+    {0x11, (uint8_t[]){0x00}, 1, 120},
+    {0x35, (uint8_t[]){0x00}, 1, 0},
+};
+
+static esp_err_t bsp_display_brightness_init(void)
+{
+    gpio_config_t bk_gpio_config = {
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = 1ULL << BSP_LCD_BACKLIGHT
+    };
+    ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
+    return ESP_OK;
+}
+
+static esp_err_t bsp_display_backlight_on(void)
+{
+    gpio_set_level(BSP_LCD_BACKLIGHT, 1);
+    return ESP_OK;
+}
+
+void lvgl_sw_rotation(void)
+{
+    bsp_display_brightness_init();
+
+    // 1. Inicializar I2C Bus Master
+    i2c_master_bus_config_t i2c_bus_conf = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .sda_io_num = BSP_I2C_SDA,
+        .scl_io_num = BSP_I2C_SCL,
+        .i2c_port = BSP_I2C_NUM,
+    };
+    i2c_new_master_bus(&i2c_bus_conf, &i2c_handle);
+
+    // 2. Encendido de LDO para PHY MIPI DSI
+    static esp_ldo_channel_handle_t phy_pwr_chan = NULL;
+    esp_ldo_channel_config_t ldo_cfg = {
+        .chan_id = BSP_MIPI_DSI_PHY_PWR_LDO_CHAN,
+        .voltage_mv = BSP_MIPI_DSI_PHY_PWR_LDO_VOLTAGE_MV,
+    };
+    esp_ldo_acquire_channel(&ldo_cfg, &phy_pwr_chan);
+    ESP_LOGI(TAG, "MIPI DSI PHY Powered on");
+
+    // 3. Crear bus DSI y Panel DBI
+    esp_lcd_dsi_bus_handle_t mipi_dsi_bus;
+    esp_lcd_dsi_bus_config_t bus_config = JD9365_PANEL_BUS_DSI_2CH_CONFIG();
+    esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus);
+
+    ESP_LOGI(TAG, "Install MIPI DSI LCD control panel");
+    esp_lcd_panel_io_handle_t io = NULL;
+    esp_lcd_dbi_io_config_t dbi_config = JD9365_PANEL_IO_DBI_CONFIG();
+    esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &io);
+
+// 4. Configurar controlador DPI (JD9365) con resolución vertical nativa corregida
+    esp_lcd_panel_handle_t disp_panel = NULL;
+    esp_lcd_dpi_panel_config_t dpi_config = {
+        .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
+        .dpi_clock_freq_mhz = 51,
+        .virtual_channel = 0,
+        .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
+        .num_fbs = 2,
+        .video_timing = {
+            .h_size = 800,                    // Ancho físico nativo del controlador JD9365
+            .v_size = 1280,                   // Alto físico nativo del controlador JD9365
+            .hsync_back_porch = 80,
+            .hsync_pulse_width = 30,
+            .hsync_front_porch = 80,
+            .vsync_back_porch = 16,
+            .vsync_pulse_width = 4,
+            .vsync_front_porch = 16,
+        },
+        .flags.use_dma2d = false,
+    };
+
+
+    jd9365_vendor_config_t vendor_config = {
+        .init_cmds = lcd_cmd,
+        .init_cmds_size = sizeof(lcd_cmd) / sizeof(jd9365_lcd_init_cmd_t),
+        .mipi_config = {
+            .dsi_bus = mipi_dsi_bus,
+            .dpi_config = &dpi_config,
+        },
+    };
+
+    const esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = BSP_LCD_RST,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = 16,
+        .vendor_config = &vendor_config,
+    };
+    
+    ESP_ERROR_CHECK(esp_lcd_new_panel_jd9365(io, &panel_config, &disp_panel));
+    esp_lcd_panel_reset(disp_panel);
+    esp_lcd_panel_init(disp_panel);
+
+    // Habilitar la pantalla explícitamente por hardware antes del puerto LVGL
+    esp_lcd_panel_disp_on_off(disp_panel, true);
+
+    // Iniciar puerto LVGL sin touch
+    lvgl_port_interface_t interface = LVGL_PORT_INTERFACE_MIPI_DSI_NO_DMA;
+    ESP_LOGI(TAG, "interface is %d", interface);
+    ESP_ERROR_CHECK(lvgl_port_init(disp_panel, NULL, interface));
+
+    // Encender retroiluminación al final
+    bsp_display_backlight_on();
+
+    vTaskDelay(pdMS_TO_TICKS(100));
+}
